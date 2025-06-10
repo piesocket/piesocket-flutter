@@ -1,16 +1,16 @@
 name: piesocket_channels
-description: WebSocket Client SDK from PieSocket Channels
-version: 1.0.1
-homepage: https://www.piesocket.com/channels
+description: WebSocket Client SDK from PieSocket by Pie.host
+version: 2.0.0
+homepage: https://www.piehost.com/piesocket
 
 environment:
-  sdk: '>=2.18.4 <3.0.0'
+  sdk: '>=2.18.4 <4.0.0'
   flutter: ">=1.17.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  http: ^0.13.5
+  http: ^1.2.2
   uuid: ^3.0.7
   web_socket_channel: ^2.2.0
 

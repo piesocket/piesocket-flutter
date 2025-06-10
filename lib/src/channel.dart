@@ -312,6 +312,8 @@ class Channel {
     PieSocketEvent event = PieSocketEvent("system:error");
     event.setData(error.toString());
     fireEvent(event);
+
+    onClosing();
   }
 
   dynamic getMemberByUUID(String uuid) {

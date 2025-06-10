@@ -1,3 +1,6 @@
+## 1.1.0
+Bump http version to support v1.2.2
+
 ## 1.0.1
 
 Moves example into private directory, no functional changes.
