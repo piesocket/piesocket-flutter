@@ -1,13 +1,13 @@
-# Dart WebSocket Client
+# PieSocket Realtime Flutter Client
 
-PieSocket Channels SDK for Flutter written in Dart.
+PieSocket SDK for Flutter written in Dart.
 
 This SDK can be used to communicate with any third-party WebSocket server,
 and implements auto-reconnection among other best WebSocket practices.
 
 
 ## Installation
-Add PieSocket Channels into your project.
+Add PieSocket into your project.
 ```
 flutter pub add piesocket_channels
 ```
@@ -45,7 +45,7 @@ Channel channel = piesocket.join("chat-room");
 ```
 
 
-[PieSocket Channels](https://piesocket.com/channels) is scalable WebSocket API service with following features:
+[PieSocket](https://piehost.com/piesocket) is scalable WebSocket API service with following features:
   - Authentication
   - Private Channels
   - Presence Channels
@@ -56,7 +56,7 @@ Channel channel = piesocket.join("chat-room");
   - Authentication
   - Upto 60% cost savings
 
-We highly recommend using PieSocket Channels over self hosted WebSocket servers for production applications.
+We highly recommend using PieSocket over self hosted WebSocket servers for production applications.
 
 ## Events
 `system:connected` is the event fired when WebSocket connection is ready, get a full list system messages here: [PieSocket System Messages](https://www.piesocket.com/docs/3.0/events#system-events)

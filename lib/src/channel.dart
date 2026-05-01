@@ -30,6 +30,16 @@ class Channel {
     connect();
   }
 
+  Channel.forTesting(String channelId) {
+    id = channelId;
+    _listeners = {};
+    _logger = Logger(false);
+    uuid = const Uuid().v4();
+    _shouldReconnect = false;
+    _options = PieSocketOptions();
+    _members = [];
+  }
+
   Channel.connect(String websocketUrl, bool enableLogs) {
     id = "standalone";
     _listeners = {};
@@ -43,27 +53,36 @@ class Channel {
     connect();
   }
 
-  String buildEndpoint() {
-    if (_options.getWebSocketEndpoint().isNotEmpty) {
-      return _options.getWebSocketEndpoint();
+  static String buildUrl(
+      String channelId, PieSocketOptions options, String channelUuid,
+      {String? jwt}) {
+    if (options.getWebSocketEndpoint().isNotEmpty) {
+      return options.getWebSocketEndpoint();
     }
 
-    String endpoint =
-        "wss://${_options.getClusterId()}.piesocket.com/v${_options.getVersion()}/$id?api_key=${_options.getApiKey()}&notify_self=${_options.getNotifySelf()}&source=fluttersdk&v=1&be=1&presence=${_options.getPresence()}";
+    final protocol = options.getSsl() ? 'wss' : 'ws';
+    final domain = options.getClusterDomain().isNotEmpty
+        ? options.getClusterDomain()
+        : '${options.getClusterId()}.piesocket.com';
 
-    String? jwt = getAuthToken();
+    String endpoint =
+        "$protocol://$domain/v${options.getVersion()}/$channelId?api_key=${options.getApiKey()}&notify_self=${options.getNotifySelf()}&source=fluttersdk&v=1&be=1&presence=${options.getPresence()}";
+
     if (jwt != null) {
       endpoint = "$endpoint&jwt=$jwt";
     }
 
-    if (_options.getUserId().isNotEmpty) {
-      endpoint = "$endpoint&user=${_options.getUserId()}";
+    if (options.getUserId().isNotEmpty) {
+      endpoint = "$endpoint&user=${options.getUserId()}";
     }
 
-    //Add UUID
-    endpoint = "$endpoint&uuid=$uuid";
+    endpoint = "$endpoint&uuid=$channelUuid";
 
     return endpoint;
+  }
+
+  String buildEndpoint() {
+    return buildUrl(id, _options, uuid, jwt: getAuthToken());
   }
 
   bool isGuarded() {

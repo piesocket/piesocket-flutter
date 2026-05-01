@@ -13,6 +13,8 @@ class PieSocketOptions {
   late String _userId;
   late String _version;
   late String _webSocketEndpoint;
+  late String _clusterDomain;
+  late bool _ssl;
 
   PieSocketOptions() {
     _version = "3";
@@ -27,6 +29,8 @@ class PieSocketOptions {
     _authHeaders = {};
     _userId = "";
     _webSocketEndpoint = "";
+    _clusterDomain = "";
+    _ssl = true;
   }
 
   String getWebSocketEndpoint() {
@@ -35,6 +39,22 @@ class PieSocketOptions {
 
   void setWebSocketEndpoint(String webSocketEndpoint) {
     _webSocketEndpoint = webSocketEndpoint;
+  }
+
+  String getClusterDomain() {
+    return _clusterDomain;
+  }
+
+  void setClusterDomain(String clusterDomain) {
+    _clusterDomain = clusterDomain;
+  }
+
+  bool getSsl() {
+    return _ssl;
+  }
+
+  void setSsl(bool ssl) {
+    _ssl = ssl;
   }
 
   String getVersion() {
