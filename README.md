@@ -2,9 +2,6 @@
 
 PieSocket SDK for Flutter written in Dart.
 
-This SDK can be used to communicate with any third-party WebSocket server,
-and implements auto-reconnection among other best WebSocket practices.
-
 
 ## Installation
 Add PieSocket into your project.
