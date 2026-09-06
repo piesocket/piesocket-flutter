@@ -1,7 +1,64 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:piesocket_channels/channels.dart';
 
 void main() {
+  // ---------------------------------------------------------------------------
+  // AuthResolver — synchronous branches (the authEndpoint fetch itself needs
+  // an HTTP mock this package has no test infra for yet, matching the
+  // pre-existing lack of coverage for Channel.getAuthTokenFromServer()).
+  // ---------------------------------------------------------------------------
+  group('AuthResolver', () {
+    test(
+        'resolves synchronously with the configured jwt, ignoring guard status',
+        () {
+      final opts = PieSocketOptions()..setJwt('configured-jwt');
+      String? got;
+      AuthResolver.resolve('private-room', 'uuid-1', opts, Logger(false),
+          (jwt) => got = jwt, (e) => fail('should not error: $e'));
+      expect(got, 'configured-jwt');
+    });
+
+    test('resolves synchronously with null for an unguarded channel', () {
+      final opts = PieSocketOptions();
+      String? got = 'unset';
+      var readyCalled = false;
+      AuthResolver.resolve('public-room', 'uuid-1', opts, Logger(false), (jwt) {
+        readyCalled = true;
+        got = jwt;
+      }, (e) => fail('should not error: $e'));
+      expect(readyCalled, isTrue);
+      expect(got, isNull);
+    });
+
+    test(
+        'errors synchronously for a guarded channel with no jwt and no authEndpoint',
+        () {
+      final opts = PieSocketOptions();
+      Object? error;
+      AuthResolver.resolve('private-room', 'uuid-1', opts, Logger(false),
+          (jwt) => fail('should not resolve'), (e) => error = e);
+      expect(error, isA<PieSocketException>());
+    });
+
+    test('forceAuth counts as guarded even without a private- prefix', () {
+      final opts = PieSocketOptions()..setForceAuth(true);
+      Object? error;
+      AuthResolver.resolve('any-room', 'uuid-1', opts, Logger(false),
+          (jwt) => fail('should not resolve'), (e) => error = e);
+      expect(error, isA<PieSocketException>());
+    });
+
+    test('isGuarded matches private- prefix or forceAuth', () {
+      final plain = PieSocketOptions();
+      final forced = PieSocketOptions()..setForceAuth(true);
+      expect(AuthResolver.isGuarded('room', plain), isFalse);
+      expect(AuthResolver.isGuarded('private-room', plain), isTrue);
+      expect(AuthResolver.isGuarded('room', forced), isTrue);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // PieSocketOptions
   // ---------------------------------------------------------------------------
@@ -302,6 +359,146 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // Channel — v4 delta presence & multiplexed send (Channel.multiplexed)
+  // ---------------------------------------------------------------------------
+  group('Channel — v4 delta presence', () {
+    PieSocketOptions v4Options() => PieSocketOptions()..setVersion('4');
+
+    test('seeds the roster from system::member_list', () {
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), null);
+      channel.onMessage(
+          '{"event":"system::member_list","data":{"members":[{"uuid":"a"},{"uuid":"b"}]}}');
+      expect(channel.getAllMembers(), [
+        {'uuid': 'a'},
+        {'uuid': 'b'}
+      ]);
+    });
+
+    test(
+        'appends a single member on system::member_joined (delta, not whole roster)',
+        () {
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), null);
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":{"uuid":"a"}}}');
+      expect(channel.getAllMembers(), [
+        {'uuid': 'a'}
+      ]);
+    });
+
+    test('does not duplicate a member already on the roster', () {
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), null);
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":{"uuid":"a"}}}');
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":{"uuid":"a"}}}');
+      expect(channel.getAllMembers().length, 1);
+    });
+
+    test('removes the member on system::member_left', () {
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), null);
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":{"uuid":"a"}}}');
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":{"uuid":"b"}}}');
+      channel.onMessage(
+          '{"event":"system::member_left","data":{"member":{"uuid":"a"}}}');
+      expect(channel.getAllMembers(), [
+        {'uuid': 'b'}
+      ]);
+    });
+
+    test('handles string members (anonymous identities)', () {
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), null);
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":"anon:1"}}');
+      channel.onMessage(
+          '{"event":"system::member_joined","data":{"member":"anon:2"}}');
+      channel.onMessage(
+          '{"event":"system::member_left","data":{"member":"anon:1"}}');
+      expect(channel.getAllMembers(), ['anon:2']);
+    });
+
+    test('keeps the v3 whole-roster behaviour when version is not 4', () {
+      final channel = Channel.forTesting('room-1');
+      channel.onMessage(
+          '{"event":"system:member_joined","data":{"members":[{"uuid":"a"},{"uuid":"b"}]}}');
+      expect(channel.getAllMembers(), [
+        {'uuid': 'a'},
+        {'uuid': 'b'}
+      ]);
+    });
+  });
+
+  group('Channel — v4 send path', () {
+    PieSocketOptions v4Options() => PieSocketOptions()..setVersion('4');
+
+    test('publish() delegates to the hub for its channel', () {
+      final sent = <String, dynamic>{};
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {});
+      final channel =
+          Channel.multiplexed('room-2', v4Options(), Logger(false), conn);
+
+      // Swap in a fake hub-send to observe the call without a real socket.
+      conn.sendOverride = (data) => sent['raw'] = data;
+      channel.publish(PieSocketEvent('chat')
+        ..setData('hi')
+        ..setMeta('m'));
+
+      final frame = json.decode(sent['raw'] as String) as Map;
+      expect(frame['event'], 'chat');
+      expect(frame['system::channel'], 'room-2');
+    });
+
+    test('publishEvent() sends a structured payload without double-encoding it',
+        () {
+      final sent = <String>[];
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), sent.add);
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), conn);
+
+      channel.publishEvent('chat', data: {'text': 'hi'}, meta: {'from': 'a'});
+
+      final frame = json.decode(sent[0]) as Map;
+      expect(frame['data'], {'text': 'hi'}); // an object, not a JSON string
+      expect(frame['meta'], {'from': 'a'});
+    });
+
+    test('refreshMembers() asks the hub to re-sync', () {
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {});
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), conn);
+      conn.attachChannel('room-1', channel);
+
+      final future = channel.refreshMembers();
+      conn.onMessage(json.encode({
+        'event': 'system::member_list',
+        'data': {
+          'channel': 'room-1',
+          'members': ['a']
+        }
+      }));
+
+      expect(future, completion(['a']));
+    });
+
+    test('refreshMembers() resolves with the current roster without a hub',
+        () async {
+      final channel = Channel.forTesting('room-1');
+      channel.onMessage(
+          '{"event":"system:member_joined","data":{"members":["z"]}}');
+      await expectLater(channel.refreshMembers(), completion(['z']));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // PieSocket — validation and room management
   // ---------------------------------------------------------------------------
   group('PieSocket', () {
@@ -355,6 +552,132 @@ void main() {
       ps.join('room-a');
       ps.leave('room-a');
       expect(ps.getAllRooms().containsKey('room-a'), isFalse);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // PieSocket — v4 multiplexing
+  // ---------------------------------------------------------------------------
+  group('PieSocket — v4 multiplexing', () {
+    PieSocket newV4Client() {
+      final opts = PieSocketOptions()
+        ..setClusterId('demo')
+        ..setApiKey('key')
+        ..setVersion('4');
+      return PieSocket(opts);
+    }
+
+    test(
+        'first v4 join() opens the shared connection with this room as primary',
+        () {
+      final ps = newV4Client();
+      final room1 = ps.join('room-1');
+
+      expect(ps.connection, isNotNull);
+      expect(ps.connection!.primaryChannelId, 'room-1');
+      expect(identical(ps.connection!.channels['room-1'], room1), isTrue);
+    });
+
+    test('second v4 join() rides the same connection as a secondary channel',
+        () {
+      final ps = newV4Client();
+      final room1 = ps.join('room-1');
+      final room2 = ps.join('room-2');
+
+      expect(identical(room1.hub, room2.hub), isTrue);
+      expect(ps.connection!.channels.length, 2);
+      expect(room2.subscribeParams, isNotNull);
+      expect(room2.subscribeParams!['channel'], 'room-2');
+    });
+
+    test(
+        'leave() on a secondary channel detaches it without closing the shared socket',
+        () {
+      final ps = newV4Client();
+      ps.join('room-1');
+      ps.join('room-2');
+
+      ps.leave('room-2');
+
+      expect(ps.getAllRooms().containsKey('room-2'), isFalse);
+      expect(ps.connection, isNotNull);
+      expect(ps.connection!.channels.containsKey('room-2'), isFalse);
+    });
+
+    test('leave() on the sole channel closes the shared connection', () {
+      final ps = newV4Client();
+      ps.join('room-1');
+
+      ps.leave('room-1');
+
+      expect(ps.connection, isNull);
+      expect(ps.getAllRooms().containsKey('room-1'), isFalse);
+    });
+
+    test('leave() on the primary promotes another channel to primary', () {
+      final ps = newV4Client();
+      ps.join('room-1');
+      ps.join('room-2');
+
+      ps.leave('room-1');
+
+      expect(ps.connection, isNotNull);
+      expect(ps.connection!.primaryChannelId, 'room-2');
+      expect(ps.getAllRooms().containsKey('room-1'), isFalse);
+      expect(ps.getAllRooms().containsKey('room-2'), isTrue);
+    });
+
+    test('v3 (default) join() never touches connection', () {
+      final opts = PieSocketOptions()
+        ..setClusterId('demo')
+        ..setApiKey('key');
+      final ps = PieSocket(opts);
+      ps.join('room-a');
+      expect(ps.connection, isNull);
+    });
+
+    test(
+        'join() opens the primary synchronously when a jwt is already configured for a guarded room',
+        () {
+      final opts = PieSocketOptions()
+        ..setClusterId('demo')
+        ..setApiKey('key')
+        ..setVersion('4')
+        ..setJwt('a-jwt');
+      final ps = PieSocket(opts);
+
+      final room = ps.join('private-room');
+
+      expect(ps.connection, isNotNull);
+      expect(ps.connection!.primaryChannelId, 'private-room');
+      expect(identical(room.hub, ps.connection), isTrue);
+    });
+
+    test(
+        'join() fires system:error (deferred a microtask) when a guarded primary has no jwt route',
+        () async {
+      final opts = PieSocketOptions()
+        ..setClusterId('demo')
+        ..setApiKey('key')
+        ..setVersion('4')
+        ..setForceAuth(true);
+      final ps = PieSocket(opts);
+
+      // AuthResolver's "no route to a token" case resolves synchronously,
+      // before join() even returns — the error fire is deferred a microtask
+      // specifically so a listener attached right after join() still catches
+      // it (see PieSocket._fireErrorNextMicrotask).
+      final room = ps.join('room-1');
+      PieSocketEvent? errorEvent;
+      room.listen('system:error', (e) => errorEvent = e);
+
+      expect(ps.connection, isNull);
+      expect(errorEvent, isNull); // not yet — still queued as a microtask
+
+      await Future.delayed(Duration.zero);
+
+      expect(errorEvent, isNotNull);
+      expect(errorEvent!.getData(), contains('authEndpoint'));
     });
   });
 }

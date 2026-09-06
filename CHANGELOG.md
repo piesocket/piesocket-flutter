@@ -1,3 +1,31 @@
+## 2.2.0
+Add v4 protocol support: set `version: "4"` to share a single WebSocket
+across every `join()` call, with delta-based presence and `system::binary`
+framing (see README). `join()` stays synchronous, matching v3 — including
+for a guarded (`private-`/`forceAuth`) room, whose JWT is resolved from
+`authEndpoint` in the background (new `AuthResolver`) rather than blocking
+`join()`; a concurrent `join()` racing in during that fetch attaches once
+it resolves instead of opening a second primary connection.
+
+Also adds `Channel.publishEvent(event, {data, meta})`, which sends a
+structured payload directly instead of requiring it to be pre-`jsonEncode`d
+into a `PieSocketEvent` first — fixes a double-encoding footgun in
+`publish(PieSocketEvent)` for anyone sending a Map/List. `PieSocketEvent`
+itself is unchanged.
+
+Fixes found in review, before this ever shipped: primary migration
+(promoting a channel after `leave()`) no longer leaves the old socket's
+listener attached, which could otherwise fire a stray close/reconnect after
+the new one was already up; a `join()` whose primary attempt fails while
+another `join()` is queued behind it now retries instead of leaving that
+channel permanently unattached; `leave()` failing to promote a new primary
+now tears the shared connection down cleanly instead of leaving it in a
+half-detached state; calling `publish`/`send`/`disconnect` on a channel
+still waiting on its authEndpoint fetch now throws a clear
+`PieSocketException` instead of a `LateInitializationError`; and a
+malformed (non-delta) `system:member_joined`/`member_left` frame under v3
+no longer crashes on a null cast.
+
 ## 2.1.0
 Add support for clusterDomain and ssl options.
 

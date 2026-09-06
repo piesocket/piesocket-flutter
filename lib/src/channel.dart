@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'connection.dart';
 import 'misc/logger.dart';
 import 'misc/piesocket_event.dart';
 import 'misc/piesocket_exception.dart';
@@ -15,6 +16,22 @@ class Channel {
   late WebSocketChannel ws;
   late String uuid;
 
+  /// Set when this handle rides a shared v4 [Connection] instead of owning
+  /// its own socket. `ws` is unused in that mode.
+  Connection? hub;
+
+  /// True for any [Channel.multiplexed] instance, even before [hub] is
+  /// attached (a guarded primary/secondary sits with `hub == null` while its
+  /// authEndpoint fetch is in flight). Distinguishes "no hub yet" from "owns
+  /// its own `ws`" — `ws` is a late field that's simply never initialized on
+  /// this path, so falling through to it would throw a
+  /// LateInitializationError instead of a clear, catchable exception.
+  bool _isMultiplexed = false;
+
+  /// Control-frame params replayed by [Connection] across a reconnect —
+  /// only meaningful for a secondary (non-primary) multiplexed channel.
+  Map<String, dynamic>? subscribeParams;
+
   late Map<String, Map<String, Function(PieSocketEvent event)>> _listeners;
   late Logger _logger;
   late PieSocketOptions _options;
@@ -26,8 +43,22 @@ class Channel {
     _listeners = {};
     uuid = const Uuid().v4();
     _shouldReconnect = false;
+    _members = [];
 
     connect();
+  }
+
+  /// A v4 handle sharing [hub]'s socket instead of opening its own — see
+  /// [PieSocket.join] under `version: "4"`. The primary channel (the one
+  /// [hub] connected with) IS live immediately; secondary channels become
+  /// live once their `system::subscribe` control frame is acked.
+  Channel.multiplexed(String channelId, this._options, this._logger, this.hub) {
+    id = channelId;
+    _isMultiplexed = true;
+    _listeners = {};
+    uuid = const Uuid().v4();
+    _shouldReconnect = false;
+    _members = [];
   }
 
   Channel.forTesting(String channelId) {
@@ -173,6 +204,21 @@ class Channel {
 
   void disconnect() {
     _shouldReconnect = false;
+
+    if (hub != null) {
+      // A multiplexed secondary channel has no socket of its own — the
+      // primary/promotion dance lives in PieSocket.leave(), which only calls
+      // disconnect() for non-primary channels.
+      hub!.unsubscribeChannel(id).catchError((_) {});
+      hub!.detachChannel(id);
+      return;
+    }
+
+    if (_isMultiplexed) {
+      // hub not attached yet (still resolving auth) — nothing to close.
+      return;
+    }
+
     ws.sink.close(NORMAL_CLOSURE_STATUS);
   }
 
@@ -235,10 +281,47 @@ class Channel {
   }
 
   void publish(PieSocketEvent event) {
+    if (hub != null) {
+      hub!.send(id, event);
+      return;
+    }
+    if (_isMultiplexed) {
+      throw PieSocketException(
+          'Channel "$id" is not connected yet — its authEndpoint fetch is still in flight.');
+    }
     ws.sink.add(event.toString());
   }
 
+  /// Publish a structured payload directly, without pre-stringifying it into
+  /// a [PieSocketEvent] first. Fixes a real footgun in [publish]:
+  /// [PieSocketEvent] stores `data`/`meta` as `String`, so a caller who wants
+  /// to send a Map is forced to `setData(jsonEncode(myMap))` — but
+  /// [PieSocketEvent.toString] then `json.encode`s that already-encoded
+  /// string again, double-escaping it on the wire
+  /// (`"data":"{\"foo\":1}"` instead of `"data":{"foo":1}`).
+  void publishEvent(String eventName, {dynamic data, dynamic meta}) {
+    send(json.encode({'event': eventName, 'data': data, 'meta': meta}));
+  }
+
+  /// Re-sync this channel's presence roster from the server (v4 only) via
+  /// `system::get_members`. Resolves with the refreshed member list; on v3
+  /// (no shared connection to ask) resolves with the roster already held.
+  Future<List> refreshMembers() {
+    if (hub != null) {
+      return hub!.requestMembers(id);
+    }
+    return Future.value(_members);
+  }
+
   void send(String text) {
+    if (hub != null) {
+      hub!.sendRaw(id, text);
+      return;
+    }
+    if (_isMultiplexed) {
+      throw PieSocketException(
+          'Channel "$id" is not connected yet — its authEndpoint fetch is still in flight.');
+    }
     ws.sink.add(text);
   }
 
@@ -307,17 +390,64 @@ class Channel {
   }
 
   void handleSystemEvents(PieSocketEvent event) {
+    // v4 delivers presence as deltas: member_joined / member_left carry only
+    // the member that changed, and the full roster arrives once as
+    // member_list (on join or in response to system::get_members /
+    // refreshMembers()). v4's system events are double-colon (`system::x`)
+    // end-to-end; v3's stay single-colon.
+    final deltaPresence = _options.getVersion() == "4";
+    final memberListEvent =
+        deltaPresence ? "system::member_list" : "system:member_list";
+    final memberJoinedEvent =
+        deltaPresence ? "system::member_joined" : "system:member_joined";
+    final memberLeftEvent =
+        deltaPresence ? "system::member_left" : "system:member_left";
+
     try {
-      //Update members list
-      if (event.getEvent() == "system:member_list" ||
-          event.getEvent() == "system:member_joined" ||
-          event.getEvent() == "system:member_left") {
+      if (event.getEvent() == memberListEvent) {
         var data = json.decode(event.getData());
-        _members = data["members"] as List;
+        _members = (data["members"] as List?) ?? [];
+      } else if (event.getEvent() == memberJoinedEvent) {
+        var data = json.decode(event.getData());
+        if (deltaPresence) {
+          _addMember(data["member"]);
+        } else {
+          _members = (data["members"] as List?) ?? [];
+        }
+      } else if (event.getEvent() == memberLeftEvent) {
+        var data = json.decode(event.getData());
+        if (deltaPresence) {
+          _removeMember(data["member"]);
+        } else {
+          _members = (data["members"] as List?) ?? [];
+        }
       }
     } catch (e) {
       throw PieSocketException(e.toString());
     }
+  }
+
+  String _memberKey(dynamic member) {
+    if (member is Map) {
+      return member['uuid'] != null
+          ? 'uuid:${member['uuid']}'
+          : 'obj:${json.encode(member)}';
+    }
+    return 'val:$member';
+  }
+
+  void _addMember(dynamic member) {
+    if (member == null) return;
+    final key = _memberKey(member);
+    if (!_members.any((m) => _memberKey(m) == key)) {
+      _members.add(member);
+    }
+  }
+
+  void _removeMember(dynamic member) {
+    if (member == null) return;
+    final key = _memberKey(member);
+    _members.removeWhere((m) => _memberKey(m) == key);
   }
 
   void onClosing() {
