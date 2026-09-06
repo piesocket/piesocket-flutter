@@ -604,6 +604,23 @@ void main() {
       expect(ps.connection!.channels.containsKey('room-2'), isFalse);
     });
 
+    test(
+        'a channel handle retained after leave() throws instead of silently forwarding',
+        () {
+      final ps = newV4Client();
+      ps.join('room-1');
+      final room2 = ps.join('room-2');
+
+      ps.leave('room-2');
+
+      // Regression: disconnect() used to detach from the hub's map but leave
+      // its own `hub` field set, so publish()/send() on a stale reference
+      // kept silently forwarding into a connection it was no longer part of.
+      expect(room2.hub, isNull);
+      expect(() => room2.publish(PieSocketEvent('x')),
+          throwsA(isA<PieSocketException>()));
+    });
+
     test('leave() on the sole channel closes the shared connection', () {
       final ps = newV4Client();
       ps.join('room-1');
@@ -634,6 +651,29 @@ void main() {
       final ps = PieSocket(opts);
       ps.join('room-a');
       expect(ps.connection, isNull);
+    });
+
+    test('the first v4 join() fires system:connected on the primary channel',
+        () async {
+      // Regression: Connection's constructor used to call onOpen() (which
+      // looks up channels[primaryChannelId]) before the caller had a chance
+      // to attachChannel() — channels[primaryChannelId] was always empty, so
+      // system:connected never fired at all. Also regresses the timing fix:
+      // onOpen() is deferred a microtask so a listener attached right after
+      // join() returns still catches it (mirrors the system:error case).
+      final opts = PieSocketOptions()
+        ..setClusterId('demo')
+        ..setApiKey('key')
+        ..setVersion('4');
+      final ps = PieSocket(opts);
+
+      var connected = false;
+      final room = ps.join('room-1');
+      room.listen('system:connected', (e) => connected = true);
+
+      expect(connected, isFalse); // not yet — still queued as a microtask
+      await Future.delayed(Duration.zero);
+      expect(connected, isTrue);
     });
 
     test(

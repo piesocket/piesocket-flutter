@@ -51,11 +51,18 @@ class Connection {
 
   /// Opens the shared socket with [primaryChannelId] as primary. [uuid] and
   /// [jwt] (if the channel is guarded) are baked into the connect URL the
-  /// same way a standalone [Channel] builds its own.
+  /// same way a standalone [Channel] builds its own. [primaryChannel] is
+  /// attached before the socket connects — `_connect()` fires `onOpen()`
+  /// synchronously (Dart's `WebSocketChannel` has no async "open" event to
+  /// wait for), which looks up `channels[primaryChannelId]` to fire
+  /// `system:connected`; attaching it here instead of leaving the caller to
+  /// call `attachChannel()` afterward means that lookup is never too late.
   Connection(this.primaryChannelId, this.options, this.logger, String uuid,
+      Channel primaryChannel,
       {String? jwt}) {
     _primaryUuid = uuid;
     _primaryJwt = jwt;
+    channels[primaryChannelId] = primaryChannel;
     _connect(Channel.buildUrl(primaryChannelId, options, uuid, jwt: jwt));
   }
 
@@ -171,6 +178,20 @@ class Connection {
   Future<List> requestMembers(String channelId) {
     final completer = Completer<List>();
     _memberRequests.putIfAbsent(channelId, () => []).add(completer);
+
+    // Unlike subscribeChannel/unsubscribeChannel, a dropped connection while
+    // this is in flight is only caught by onClose()/onError() rejecting
+    // whatever's left in _memberRequests — this timeout is the backstop for
+    // a reply that never arrives at all (server never responds, frame lost).
+    final timer = Timer(const Duration(milliseconds: _controlTimeoutMs), () {
+      if (!completer.isCompleted) {
+        _memberRequests[channelId]?.remove(completer);
+        completer
+            .completeError('system::get_members timed out for "$channelId"');
+      }
+    });
+    completer.future.whenComplete(() => timer.cancel());
+
     sendControl('system::get_members', {'channel': channelId});
     return completer.future;
   }
@@ -221,17 +242,30 @@ class Connection {
   void _connect(String endpoint) {
     _ws = WebSocketChannel.connect(Uri.parse(endpoint));
 
+    // cancelOnError: false — the only reconnect logic lives in onClose(),
+    // fired via onDone. If this subscription auto-cancelled on the first
+    // error (cancelOnError: true), onDone would never fire afterward and a
+    // single transport error would kill the shared socket permanently with
+    // no recovery. onError() closes the sink itself, which still triggers a
+    // natural onDone once the stream actually finishes.
     _wsSubscription = _ws.stream.listen(
       (message) => onMessage(message),
-      cancelOnError: true,
+      cancelOnError: false,
       onError: (error) => onError(error),
       onDone: () => onClose(),
     );
 
-    // WebSocketChannel has no synchronous "open" callback in Dart — treat the
-    // socket as open once construction succeeds (matches Channel's own
-    // connect()); errors surface via onError/onDone instead.
-    onOpen();
+    // WebSocketChannel has no synchronous "open" callback in Dart (nor a
+    // meaningful async one on the web_socket_channel version this depends
+    // on — `.ready` is a no-op `Future.value()` before 3.x) — treat the
+    // socket as open once construction succeeds, the same as Channel's own
+    // connect(); errors surface via onError/onDone instead. Deferred a
+    // microtask, same reasoning as _fireErrorNextMicrotask: this runs from
+    // inside PieSocket.join() (via the Connection constructor), before
+    // join() has returned the Channel to its caller — firing inline would
+    // mean a `channel.listen('system:connected', ...)` right after join()
+    // returns could never catch it.
+    scheduleMicrotask(onOpen);
   }
 
   void onOpen() {
@@ -307,7 +341,12 @@ class Connection {
 
     channel.onMessage(message);
 
-    if (event == 'system::member_list') {
+    // Only settle under `channelId` if that's genuinely the channel this
+    // frame resolved to — if it fell back to the primary because `channelId`
+    // is no longer in `channels` (e.g. a stale get_members reply racing a
+    // detach), reporting the primary's roster under the original id would
+    // hand the caller the wrong channel's members.
+    if (event == 'system::member_list' && channels[channelId] == channel) {
       _settleMemberRequestsWithMembers(channelId, channel.getAllMembers());
     }
   }

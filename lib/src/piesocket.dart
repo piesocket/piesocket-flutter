@@ -8,6 +8,9 @@ import 'misc/logger.dart';
 import 'misc/piesocket_event.dart';
 import 'misc/piesocket_exception.dart';
 import 'misc/piesocket_options.dart';
+import 'pie_rtc.dart';
+
+import 'package:flutter_webrtc/flutter_webrtc.dart' show MediaStream;
 
 class PieSocket {
   String counter = "ok";
@@ -53,14 +56,43 @@ class PieSocket {
   /// `system:connected` on v3. A guarded channel (`private-`/`forceAuth`)
   /// resolves its JWT from `authEndpoint` in the background the same way —
   /// `join()` never waits on that fetch.
-  Channel join(String roomId) {
+  ///
+  /// Pass [video], [audio], or [pieRTC] to mark this as a PieRTC (WebRTC)
+  /// room — only meaningful under `version: "4"`; there is no v3 WebRTC
+  /// support in this SDK. `channel.pieRTC` is attached once the room's
+  /// underlying connection/subscribe resolves (which, like everything else
+  /// in the multiplexed path, may be after `join()` already returned).
+  Channel join(
+    String roomId, {
+    bool video = false,
+    bool audio = false,
+    bool pieRTC = false,
+    bool shouldBroadcast = true,
+    void Function(MediaStream stream, PieRTC pieRTC)? onLocalVideo,
+    void Function(String uuid, MediaStream stream)? onParticipantJoined,
+    void Function(String uuid)? onParticipantLeft,
+    void Function(String uuid, String streamId)? onScreenSharingStopped,
+  }) {
     if (rooms.containsKey(roomId)) {
       logger.debug("Returning existing room instance: $roomId");
       return rooms[roomId]!;
     }
 
+    final isPieRTCRoom = video || audio || pieRTC;
+    final rtcOptions = (isPieRTCRoom && options.getVersion() == "4")
+        ? (PieRTCOptions(
+            shouldBroadcast: shouldBroadcast,
+            video: video,
+            audio: audio,
+            onLocalVideo: onLocalVideo,
+            onParticipantJoined: onParticipantJoined,
+            onParticipantLeft: onParticipantLeft,
+            onScreenSharingStopped: onScreenSharingStopped,
+          ))
+        : null;
+
     Channel room = options.getVersion() == "4"
-        ? _joinMultiplexed(roomId)
+        ? _joinMultiplexed(roomId, rtcOptions)
         : Channel(roomId, options, logger);
 
     rooms[roomId] = room;
@@ -68,20 +100,21 @@ class PieSocket {
     return room;
   }
 
-  Channel _joinMultiplexed(String roomId) {
+  Channel _joinMultiplexed(String roomId, PieRTCOptions? rtcOptions) {
     if (connection != null) {
-      return _attachSecondary(roomId, connection!);
+      return _attachSecondary(roomId, connection!, rtcOptions);
     }
 
     if (_multiplexOpening != null) {
       // A primary is already resolving auth / connecting — attach once it's
       // ready instead of racing to open a second one.
       final channel = Channel.multiplexed(roomId, options, logger, null);
-      _multiplexOpening!.then((_) => _attachOrRetry(roomId, channel));
+      _multiplexOpening!
+          .then((_) => _attachOrRetry(roomId, channel, rtcOptions));
       return channel;
     }
 
-    return _openPrimary(roomId);
+    return _openPrimary(roomId, rtcOptions);
   }
 
   /// Re-evaluates where [roomId] (already returned to its caller as
@@ -92,35 +125,41 @@ class PieSocket {
   /// independently retrying and racing each other: only whichever one runs
   /// first sets a new `_multiplexOpening`, and the rest queue behind it, same
   /// as any other join() would.
-  void _attachOrRetry(String roomId, Channel channel) {
+  void _attachOrRetry(
+      String roomId, Channel channel, PieRTCOptions? rtcOptions) {
     if (connection != null) {
-      _resolveAndAttach(roomId, channel, connection!);
+      _resolveAndAttach(roomId, channel, connection!, rtcOptions);
       return;
     }
 
     if (_multiplexOpening != null) {
-      _multiplexOpening!.then((_) => _attachOrRetry(roomId, channel));
+      _multiplexOpening!
+          .then((_) => _attachOrRetry(roomId, channel, rtcOptions));
       return;
     }
 
     // Nothing else came up in the meantime — this room still wants a
     // connection, so try opening the primary itself instead of leaving
     // `channel` permanently unattached.
-    _openPrimary(roomId, channel: channel);
+    _openPrimary(roomId, rtcOptions, channel: channel);
   }
 
-  Channel _openPrimary(String roomId, {Channel? channel}) {
+  Channel _openPrimary(String roomId, PieRTCOptions? rtcOptions,
+      {Channel? channel}) {
     final resolvedChannel =
         channel ?? Channel.multiplexed(roomId, options, logger, null);
     final completer = Completer<Connection?>();
     _multiplexOpening = completer.future;
 
     AuthResolver.resolve(roomId, resolvedChannel.uuid, options, logger, (jwt) {
-      final conn =
-          Connection(roomId, options, logger, resolvedChannel.uuid, jwt: jwt);
+      final conn = Connection(
+          roomId, options, logger, resolvedChannel.uuid, resolvedChannel,
+          jwt: jwt);
       resolvedChannel.hub = conn;
       connection = conn;
-      conn.attachChannel(roomId, resolvedChannel);
+      if (rtcOptions != null) {
+        resolvedChannel.pieRTC = PieRTC(resolvedChannel, rtcOptions, logger);
+      }
       _multiplexOpening = null;
       completer.complete(conn);
     }, (error) {
@@ -133,13 +172,15 @@ class PieSocket {
     return resolvedChannel;
   }
 
-  Channel _attachSecondary(String roomId, Connection conn) {
+  Channel _attachSecondary(
+      String roomId, Connection conn, PieRTCOptions? rtcOptions) {
     final channel = Channel.multiplexed(roomId, options, logger, conn);
-    _resolveAndAttach(roomId, channel, conn);
+    _resolveAndAttach(roomId, channel, conn, rtcOptions);
     return channel;
   }
 
-  void _resolveAndAttach(String roomId, Channel channel, Connection conn) {
+  void _resolveAndAttach(String roomId, Channel channel, Connection conn,
+      PieRTCOptions? rtcOptions) {
     AuthResolver.resolve(roomId, channel.uuid, options, logger, (jwt) {
       final presence =
           options.getPresence() == 1 || roomId.startsWith('presence-');
@@ -155,6 +196,9 @@ class PieSocket {
       channel.subscribeParams = params;
       channel.hub = conn;
       conn.attachChannel(roomId, channel);
+      if (rtcOptions != null) {
+        channel.pieRTC = PieRTC(channel, rtcOptions, logger);
+      }
 
       // Fire-and-forget: join() stays synchronous. A failure just logs — the
       // caller can listen for system::subscribe_error frames via '*' if they

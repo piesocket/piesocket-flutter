@@ -1,3 +1,14 @@
+## 2.3.0
+Add PieRTC — programmable WebRTC video/audio rooms over v4, the Flutter
+counterpart to piesocket-js's `PieRTC` (there's no v3 equivalent in this
+SDK). Pass `video: true`, `audio: true`, or `pieRTC: true` to `join()` to
+mark a room as PieRTC; `room.pieRTC` is attached once the room's connection
+resolves. Signalling rides its own `rtc::` namespace — a plain PieSocket
+relay, so it interoperates with the JS SDK's rooms. Built on
+`flutter_webrtc` (new dependency); your app still owns the camera/mic
+permission entries in its own `AndroidManifest.xml`/`Info.plist`, same as
+any other `flutter_webrtc` consumer.
+
 ## 2.2.0
 Add v4 protocol support: set `version: "4"` to share a single WebSocket
 across every `join()` call, with delta-based presence and `system::binary`

@@ -5,6 +5,7 @@ import 'misc/logger.dart';
 import 'misc/piesocket_event.dart';
 import 'misc/piesocket_exception.dart';
 import 'misc/piesocket_options.dart';
+import 'pie_rtc.dart';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
@@ -19,6 +20,11 @@ class Channel {
   /// Set when this handle rides a shared v4 [Connection] instead of owning
   /// its own socket. `ws` is unused in that mode.
   Connection? hub;
+
+  /// Set when this is a PieRTC (WebRTC) room — see [PieSocket.join]'s
+  /// `video`/`audio`/`pieRTC` params. Only meaningful under `version: "4"`;
+  /// v3's WebRTC equivalent doesn't exist in this SDK.
+  PieRTC? pieRTC;
 
   /// True for any [Channel.multiplexed] instance, even before [hub] is
   /// attached (a guarded primary/secondary sits with `hub == null` while its
@@ -209,8 +215,13 @@ class Channel {
       // A multiplexed secondary channel has no socket of its own — the
       // primary/promotion dance lives in PieSocket.leave(), which only calls
       // disconnect() for non-primary channels.
-      hub!.unsubscribeChannel(id).catchError((_) {});
-      hub!.detachChannel(id);
+      final oldHub = hub!;
+      oldHub.unsubscribeChannel(id).catchError((_) {});
+      oldHub.detachChannel(id);
+      // Clear it so any reference to this Channel retained after leave()
+      // gets a clear PieSocketException from publish()/send() instead of
+      // silently forwarding into a connection it's no longer part of.
+      hub = null;
       return;
     }
 
@@ -374,6 +385,7 @@ class Channel {
 
           // Trigger listeners
           handleSystemEvents(event);
+          _handlePieRTCEvent(eventName, obj["data"]);
           fireEvent(event);
         }
       }
@@ -421,9 +433,41 @@ class Channel {
         } else {
           _members = (data["members"] as List?) ?? [];
         }
+        final member = data["member"];
+        if (pieRTC != null && member is Map && member["uuid"] != null) {
+          pieRTC!.removeParticipant(member["uuid"] as String);
+        }
       }
     } catch (e) {
       throw PieSocketException(e.toString());
+    }
+  }
+
+  /// Routes PieRTC's `rtc::*` signalling frames — its own namespace, kept
+  /// separate from both v3's `system:` and v4's `system::` events so it's
+  /// never mistaken for a control frame. No-op when [pieRTC] isn't attached
+  /// (a plain subscriber sharing a channel name with a PieRTC room still
+  /// receives its broadcasts and must not crash on them).
+  void _handlePieRTCEvent(String eventName, dynamic data) {
+    if (pieRTC == null || data is! Map) return;
+
+    final from = data['from'];
+    final to = data['to'];
+
+    if (eventName == 'rtc::broadcaster' && from != uuid) {
+      pieRTC!.requestOfferFromPeer();
+    } else if (eventName == 'rtc::stopped_screen' && from != uuid) {
+      pieRTC!.onRemoteScreenStopped(from as String, data['streamId'] as String);
+    } else if (eventName == 'rtc::watcher' && from != uuid) {
+      pieRTC!.shareVideo(data);
+    } else if (eventName == 'rtc::request' && from != uuid) {
+      pieRTC!.shareVideo(data);
+    } else if (eventName == 'rtc::candidate' && to == uuid) {
+      pieRTC!.addIceCandidate(data);
+    } else if (eventName == 'rtc::offer' && to == uuid) {
+      pieRTC!.createAnswer(data);
+    } else if (eventName == 'rtc::answer' && to == uuid) {
+      pieRTC!.handleAnswer(data);
     }
   }
 

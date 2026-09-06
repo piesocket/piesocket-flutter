@@ -92,6 +92,39 @@ Notes for v4:
   still in flight attaches once it resolves, rather than opening a second
   shared connection.
 
+### PieRTC — WebRTC video/audio rooms (v4 only)
+
+PieRTC is programmable WebRTC over v4 — the Flutter counterpart to
+piesocket-js's `PieRTC`. There's no v3 equivalent in this SDK. It depends on
+[`flutter_webrtc`](https://pub.dev/packages/flutter_webrtc) (already a
+dependency of this package) — your app still needs to add that package's own
+camera/microphone permission entries to its `AndroidManifest.xml`/
+`Info.plist`; this package has no platform folders of its own to put them in.
+
+```dart
+options.setVersion("4");
+PieSocket piesocket = PieSocket(options);
+
+Channel room = piesocket.join(
+  "video-room",
+  video: true,
+  onLocalVideo: (stream, pieRTC) { /* attach to a renderer */ },
+  onParticipantJoined: (uuid, stream) { /* attach remote stream */ },
+  onParticipantLeft: (uuid) { /* remove remote stream */ },
+);
+```
+
+- Pass `video: true`, `audio: true`, or `pieRTC: true` to `join()` to mark a
+  room as PieRTC — `room.pieRTC` is attached once the room's connection
+  resolves (may be after `join()` already returned, same as everything else
+  under v4).
+- Signalling uses its own `rtc::` namespace (`rtc::offer`, `rtc::answer`,
+  `rtc::candidate`, etc.) — a plain PieSocket relay, no server-side
+  special-casing, so a Flutter and a JS/web client can share the same room.
+- `shareScreen()` calls `flutter_webrtc`'s `getDisplayMedia` — supported on
+  web/desktop; screen capture on mobile needs additional platform setup that
+  `flutter_webrtc` documents separately.
+
 [PieSocket](https://piehost.com/piesocket) is scalable WebSocket API service with following features:
   - Authentication
   - Private Channels

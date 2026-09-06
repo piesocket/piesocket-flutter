@@ -1,6 +1,6 @@
 name: piesocket_channels
 description: PieSocket Realtime SDK for Flutter by Pie.host
-version: 2.2.0
+version: 2.3.0
 homepage: https://www.piehost.com/piesocket
 
 environment:
@@ -13,6 +13,7 @@ dependencies:
   http: ^1.2.2
   uuid: ^3.0.7
   web_socket_channel: ^2.2.0
+  flutter_webrtc: ^1.6.1
 
 dev_dependencies:
   flutter_test:

@@ -56,7 +56,11 @@ class AuthResolver {
         onError(PieSocketException('Auth endpoint did not return a token'));
         return;
       }
-      options.setJwt(jwt);
+      // Deliberately not persisted onto `options` — it's shared by every
+      // channel on this PieSocket, and this token is scoped to [channelId].
+      // Writing it back would make the next guarded channel's resolve() see
+      // getJwt().isNotEmpty and reuse this channel's token instead of
+      // fetching its own.
       logger.debug('Auth token fetched, resuming connection');
       onReady(jwt);
     }).catchError((e) {
