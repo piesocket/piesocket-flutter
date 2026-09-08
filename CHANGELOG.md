@@ -1,3 +1,25 @@
+## 7.0.0
+Version realigned to match the other PieSocket client SDKs (piesocket-js et al.);
+this is 2.4.0's feature set, renumbered — no breaking API changes from 2.3.0.
+
+Screen sharing: `pieRTC.shareScreen()` now renegotiates the screen track onto
+every peer (alongside the camera) and `pieRTC.stopScreenShare()` removes it
+again; both fire `onScreenSharingStopped` with this client's own uuid and
+publish `rtc::stopped_screen`, and the SDK also stops automatically when the
+user ends the share from the OS UI. Zero-config on web, desktop, macOS and
+iOS (iOS uses in-app ReplayKit capture); Android additionally needs the app
+to run a `mediaProjection` foreground service while sharing — see the README.
+
+Add `Channel.sendBinary(List<int> bytes)` — emits a raw binary WebSocket
+frame on the channel's primary connection. The server wraps any inbound
+binary frame as a `system::binary` event (base64 `data`) before relaying it,
+so a browser/JS peer receives it exactly as it would a binary frame from
+another JS client. Only supported on the primary channel — raw bytes carry
+no `system::channel` tag, so a secondary channel's frame can't be attributed
+server-side; sending on a secondary throws `PieSocketException`. Receiving
+binary already worked (any `system::binary` event's `data` is a base64
+string); this closes the send side.
+
 ## 2.3.0
 Add PieRTC — programmable WebRTC video/audio rooms over v4, the Flutter
 counterpart to piesocket-js's `PieRTC` (there's no v3 equivalent in this

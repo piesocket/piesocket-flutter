@@ -75,7 +75,10 @@ Notes for v4:
 - **All v4 system events are double-colon** (`system::member_joined`,
   `system::binary`, etc.), unlike v3's single-colon `system:` events.
 - **Binary needs no opt-in.** Any binary frame arrives as a `system::binary`
-  event whose `data` is a base64 string — decode it with `base64Decode`.
+  event whose `data` is a base64 string — decode it with `base64Decode`. To
+  send, call `channel.sendBinary(bytes)` — a raw binary frame the server
+  re-wraps as `system::binary` for every other client (JS peers included).
+  Primary channel only; a secondary channel's `sendBinary` throws.
 - **`publishEvent(event, {data, meta})`** sends a structured payload (a Map,
   List, or primitive) directly, without needing to pre-`jsonEncode` it into a
   `PieSocketEvent` first — use this instead of `publish(PieSocketEvent)` for
@@ -121,9 +124,16 @@ Channel room = piesocket.join(
 - Signalling uses its own `rtc::` namespace (`rtc::offer`, `rtc::answer`,
   `rtc::candidate`, etc.) — a plain PieSocket relay, no server-side
   special-casing, so a Flutter and a JS/web client can share the same room.
-- `shareScreen()` calls `flutter_webrtc`'s `getDisplayMedia` — supported on
-  web/desktop; screen capture on mobile needs additional platform setup that
-  `flutter_webrtc` documents separately.
+- **`room.pieRTC.shareScreen()`** renegotiates a screen track onto every peer
+  (alongside the camera); **`stopScreenShare()`** removes it. Both fire
+  `onScreenSharingStopped` (with this client's own uuid) and publish
+  `rtc::stopped_screen`; the SDK also stops if the user ends the share from
+  the OS UI. Zero-config on web, desktop, macOS and iOS (iOS uses in-app
+  ReplayKit capture). **Android** additionally needs the app to run a
+  foreground service of type `mediaProjection` while sharing — the simplest
+  way is the [`flutter_background`](https://pub.dev/packages/flutter_background)
+  package (`FlutterBackground.enableBackgroundExecution()` before
+  `shareScreen()`), which ships the `<service>` its manifest needs.
 
 [PieSocket](https://piehost.com/piesocket) is scalable WebSocket API service with following features:
   - Authentication

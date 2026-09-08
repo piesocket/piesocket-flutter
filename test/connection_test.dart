@@ -42,6 +42,27 @@ void main() {
       conn.sendRaw('room-2', 'plain text');
       expect(sent[0], 'plain text');
     });
+
+    test('sendBinary() emits raw bytes for the primary channel', () {
+      final sentBytes = <List<int>>[];
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {})
+            ..sendBinaryOverride = sentBytes.add;
+
+      conn.sendBinary('room-1', [1, 2, 3, 4]);
+
+      expect(sentBytes, hasLength(1));
+      expect(sentBytes[0], [1, 2, 3, 4]);
+    });
+
+    test('sendBinary() throws for a secondary channel', () {
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {})
+            ..sendBinaryOverride = (_) {};
+
+      expect(() => conn.sendBinary('room-2', [1, 2, 3]),
+          throwsA(isA<PieSocketException>()));
+    });
   });
 
   group('Connection — subscribe control frames', () {

@@ -336,6 +336,26 @@ class Channel {
     ws.sink.add(text);
   }
 
+  /// Send a raw binary WebSocket frame (v4). The server wraps any inbound
+  /// binary frame as a `system::binary` event (base64 `data`) before relaying
+  /// it, so a browser/JS peer receives this exactly as it would a binary
+  /// frame from another JS client — decode with `base64Decode`.
+  ///
+  /// Only supported on a channel's **primary** connection: raw bytes carry no
+  /// `system::channel` tag, so the server can't attribute them to one of a
+  /// multiplexed client's secondary channels. Sending on a secondary throws.
+  void sendBinary(List<int> bytes) {
+    if (hub != null) {
+      hub!.sendBinary(id, bytes);
+      return;
+    }
+    if (_isMultiplexed) {
+      throw PieSocketException(
+          'Channel "$id" is not connected yet — its authEndpoint fetch is still in flight.');
+    }
+    ws.sink.add(bytes);
+  }
+
   void onOpen() {
     PieSocketEvent event = PieSocketEvent("system:connected");
     fireEvent(event);

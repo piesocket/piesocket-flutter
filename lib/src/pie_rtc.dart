@@ -164,29 +164,42 @@ class PieRTC {
   }
 
   Future<void> onLocalScreen(MediaStream screenStream) async {
-    // Register stop handler.
+    // The user stopped the share from the OS UI — tear everything down.
     final videoTracks = screenStream.getVideoTracks();
     if (videoTracks.isNotEmpty) {
       videoTracks.first.onEnded = () {
-        channel.publishEvent('rtc::stopped_screen', data: {
-          'from': channel.uuid,
-          'streamId': screenStream.id,
-        });
+        stopScreenShare();
       };
     }
 
-    // Send it to other peers.
+    // Send it to every peer (in addition to the camera).
     displayStream = screenStream;
     for (final participant in participants.values) {
       final pc = participant.rtc;
       if (pc == null) continue;
       for (final track in screenStream.getTracks()) {
-        await pc.addTrack(track, screenStream);
+        await pc.addTrack(track, screenStream); // -> onRenegotiationNeeded
       }
     }
   }
 
+  /// Start sharing this device's screen with everyone in the room. One call —
+  /// the SDK requests the capture and renegotiates the screen track onto every
+  /// peer connection, alongside the camera.
+  ///
+  /// Zero-config on web, desktop, macOS and iOS (iOS uses in-app ReplayKit
+  /// capture). **Android** additionally needs the app to run a foreground
+  /// service of type `mediaProjection` while sharing — see the README.
+  ///
+  /// Call [stopScreenShare] to stop; the SDK also stops if the user ends the
+  /// share from the OS UI. Either way it fires
+  /// [PieRTCOptions.onScreenSharingStopped] with this client's own uuid and
+  /// publishes `rtc::stopped_screen` to the room.
   Future<void> shareScreen() async {
+    if (displayStream != null) {
+      _logger.debug('PieRTC: screen share already active');
+      return;
+    }
     try {
       final stream =
           await navigator.mediaDevices.getDisplayMedia({'video': true});
@@ -194,6 +207,35 @@ class PieRTC {
     } catch (e) {
       _logger.debug('PieRTC: getDisplayMedia failed: $e');
     }
+  }
+
+  /// Stop screen sharing started by [shareScreen].
+  Future<void> stopScreenShare() async {
+    final stream = displayStream;
+    if (stream == null) return;
+    final streamId = stream.id;
+    displayStream = null;
+
+    final screenTrackIds = stream.getTracks().map((t) => t.id).toSet();
+    for (final participant in participants.values) {
+      final pc = participant.rtc;
+      if (pc == null) continue;
+      final senders = await pc.getSenders();
+      for (final sender in senders) {
+        if (screenTrackIds.contains(sender.track?.id)) {
+          await pc.removeTrack(sender); // -> onRenegotiationNeeded
+        }
+      }
+    }
+
+    for (final track in stream.getTracks()) {
+      await track.stop();
+    }
+    await stream.dispose();
+
+    channel.publishEvent('rtc::stopped_screen',
+        data: {'from': channel.uuid, 'streamId': streamId});
+    identity.onScreenSharingStopped?.call(channel.uuid, streamId);
   }
 
   Future<void> _sendVideoOffer(String from, RTCPeerConnection pc) async {

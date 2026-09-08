@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'channel.dart';
 import 'misc/logger.dart';
 import 'misc/piesocket_event.dart';
+import 'misc/piesocket_exception.dart';
 import 'misc/piesocket_options.dart';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -49,6 +50,9 @@ class Connection {
   /// Overridable for tests — avoids needing a real socket to test routing.
   void Function(String data)? sendOverride;
 
+  /// Overridable for tests — binary counterpart of [sendOverride].
+  void Function(List<int> bytes)? sendBinaryOverride;
+
   /// Opens the shared socket with [primaryChannelId] as primary. [uuid] and
   /// [jwt] (if the channel is guarded) are baked into the connect URL the
   /// same way a standalone [Channel] builds its own. [primaryChannel] is
@@ -89,6 +93,25 @@ class Connection {
       return;
     }
     _ws.sink.add(data);
+  }
+
+  void _rawSendBinary(List<int> bytes) {
+    if (sendBinaryOverride != null) {
+      sendBinaryOverride!(bytes);
+      return;
+    }
+    _ws.sink.add(bytes);
+  }
+
+  /// Send a raw binary frame on the shared socket — see [Channel.sendBinary].
+  /// Only valid for the primary channel: raw bytes carry no `system::channel`
+  /// tag, so a secondary channel's frame can't be attributed server-side.
+  void sendBinary(String channelId, List<int> bytes) {
+    if (!isPrimary(channelId)) {
+      throw PieSocketException(
+          'Binary frames are only supported on the primary channel, not "$channelId".');
+    }
+    _rawSendBinary(bytes);
   }
 
   void sendControl(String eventName, Map<String, dynamic> data) {
