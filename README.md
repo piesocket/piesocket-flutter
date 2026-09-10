@@ -111,10 +111,14 @@ PieSocket piesocket = PieSocket(options);
 Channel room = piesocket.join(
   "video-room",
   video: true,
+  cameraFacing: 'user', // 'user' (front, default) or 'environment' (rear)
   onLocalVideo: (stream, pieRTC) { /* attach to a renderer */ },
   onParticipantJoined: (uuid, stream) { /* attach remote stream */ },
   onParticipantLeft: (uuid) { /* remove remote stream */ },
 );
+
+// Flip the camera on the live call (no renegotiation):
+await room.pieRTC?.switchCamera(); // -> room.pieRTC.isFrontCamera
 ```
 
 - Pass `video: true`, `audio: true`, or `pieRTC: true` to `join()` to mark a
@@ -122,8 +126,19 @@ Channel room = piesocket.join(
   resolves (may be after `join()` already returned, same as everything else
   under v4).
 - Signalling uses its own `rtc::` namespace (`rtc::offer`, `rtc::answer`,
-  `rtc::candidate`, etc.) — a plain PieSocket relay, no server-side
-  special-casing, so a Flutter and a JS/web client can share the same room.
+  `rtc::candidate`, `rtc::renegotiate`, etc.) — a plain PieSocket relay, no
+  server-side special-casing, so a Flutter and a JS/web client can share the
+  same room.
+- Negotiation is **collision-free**: for each peer pair the client with the
+  larger uuid is the sole offerer and the other side only answers (it sends
+  `rtc::renegotiate` to ask for a fresh offer when it adds a track). This is
+  what makes a symmetric 1:1 call — both sides sending audio + video — work
+  without SDP glare.
+- `onParticipantJoined` fires once per remote stream, for **audio-only** peers
+  as well as video ones.
+- **Camera:** `cameraFacing` on `join()` picks the starting lens (`'user'`
+  front / `'environment'` rear; default front). `room.pieRTC.switchCamera()`
+  flips it live and returns the new `room.pieRTC.isFrontCamera`.
 - **`room.pieRTC.shareScreen()`** renegotiates a screen track onto every peer
   (alongside the camera); **`stopScreenShare()`** removes it. Both fire
   `onScreenSharingStopped` (with this client's own uuid) and publish
@@ -134,6 +149,112 @@ Channel room = piesocket.join(
   way is the [`flutter_background`](https://pub.dev/packages/flutter_background)
   package (`FlutterBackground.enableBackgroundExecution()` before
   `shareScreen()`), which ships the `<service>` its manifest needs.
+
+### PieCall — native incoming calls (CallKit / PushKit / full-screen intent)
+
+`PieCall` turns PieRTC + call signalling + `flutter_callkit_incoming` into a
+single object. It shows the native incoming-call UI, rings, wakes the screen,
+answers from the lock screen, and — with a push — does all of that when the app
+is force-quit.
+
+```dart
+final call = PieCall(
+  socket: () => piesocket,            // your PieSocket instance (nullable ok)
+  selfUserId: () => myUserId,
+  config: const PieCallConfig(appName: 'MyApp'),
+)
+  ..onEnsureConnected = () async { if (!realtime.connected) await realtime.reconnect(); }
+  ..onAccept  = (callId) async {
+      final r = await api.post('calls/$callId/accept');
+      return r['status'] != 'answered_elsewhere';   // false ⇒ another device won, stand down
+    }
+  ..onDecline = (callId) => api.post('calls/$callId/decline')
+  ..onHangUp  = (callId, reason) => api.post('calls/$callId/${reason == 'missed' ? 'timeout' : 'end'}');
+
+// feed it the events you already receive on private-user-<id>
+socketChannel.listen('call_invite', (e) => call.handleSignal('call_invite', e.data));
+
+// outgoing
+final r = await api.post('calls', {'to_id': peerId, 'media': 'video'});
+call.startOutgoing(invite: PieCallInvite.fromMap(r['call']));
+
+// drive your UI
+call.updates.listen((s) { /* s.phase, s.invite, s.muted, … */ });
+```
+
+**Push wake-up.** Your server sends a data payload on `call_invite` /
+`call_cancel` (see the schema in `PieCallPush`). In your FCM background handler:
+
+```dart
+@pragma('vm:entry-point')
+Future<void> _bg(RemoteMessage m) async {
+  if (PieCallPush.isCallPush(m.data)) {
+    await Firebase.initializeApp();
+    await PieCallPush.handleData(m.data, appName: 'MyApp');
+  }
+}
+```
+
+Register the iOS VoIP token with your backend:
+`final token = await PieCall.voipToken();` (and re-register on
+`call.voipTokenChanges`).
+
+**iOS setup** (real device only):
+
+- `Info.plist` → `UIBackgroundModes` must include `voip` and `remote-notification`.
+- Xcode capabilities: **Push Notifications** + **Background Modes → Voice over IP**.
+- `AppDelegate.swift` — implement PushKit + `CallkitIncomingAppDelegate` and
+  forward the VoIP push to the plugin **synchronously** (or iOS kills the app):
+
+```swift
+import PushKit
+import CallKit
+import flutter_callkit_incoming
+
+@main
+@objc class AppDelegate: FlutterAppDelegate, PKPushRegistryDelegate, CallkitIncomingAppDelegate {
+  override func application(_ application: UIApplication,
+      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+    let registry = PKPushRegistry(queue: .main)
+    registry.delegate = self
+    registry.desiredPushTypes = [.voIP]
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+  func pushRegistry(_ r: PKPushRegistry, didUpdate c: PKPushCredentials, for t: PKPushType) {
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.setDevicePushTokenVoIP(
+      c.token.map { String(format: "%02x", $0) }.joined())
+  }
+  func pushRegistry(_ r: PKPushRegistry, didInvalidatePushTokenFor t: PKPushType) {
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.setDevicePushTokenVoIP("")
+  }
+  func pushRegistry(_ r: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload,
+      for type: PKPushType, completion: @escaping () -> Void) {
+    guard type == .voIP else { return }
+    let p = payload.dictionaryPayload
+    let data = flutter_callkit_incoming.Data(
+      id: p["id"] as? String ?? "",
+      nameCaller: p["nameCaller"] as? String ?? "",
+      handle: p["handle"] as? String ?? "",
+      type: (p["isVideo"] as? Bool ?? false) ? 1 : 0)
+    data.extra = p as NSDictionary
+    SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(data, fromPushKit: true) { completion() }
+  }
+  // onAccept/onDecline/onEnd/onTimeOut: just call action.fulfill() — the Dart side hits your REST API.
+}
+```
+
+**Android setup:**
+
+- `AndroidManifest.xml`: add `POST_NOTIFICATIONS`, `USE_FULL_SCREEN_INTENT`,
+  `WAKE_LOCK`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`; keep
+  `<application android:name="${applicationName}">`.
+- `MainActivity` must extend `FlutterFragmentActivity`.
+- `app/build.gradle(.kts)`:
+  `manifestPlaceholders["applicationName"] = "<pkg>.MainApplication"` and a
+  `MainApplication` that calls
+  `FlutterCallkitIncomingPlugin.registerEventCallback(...)`.
+- `proguard-rules.pro`: `-keep class com.hiennv.flutter_callkit_incoming.** { *; }`.
+- Java 17.
 
 [PieSocket](https://piehost.com/piesocket) is scalable WebSocket API service with following features:
   - Authentication

@@ -68,6 +68,7 @@ class PieSocket {
     bool audio = false,
     bool pieRTC = false,
     bool shouldBroadcast = true,
+    String cameraFacing = 'user',
     void Function(MediaStream stream, PieRTC pieRTC)? onLocalVideo,
     void Function(String uuid, MediaStream stream)? onParticipantJoined,
     void Function(String uuid)? onParticipantLeft,
@@ -84,6 +85,7 @@ class PieSocket {
             shouldBroadcast: shouldBroadcast,
             video: video,
             audio: audio,
+            cameraFacing: cameraFacing,
             onLocalVideo: onLocalVideo,
             onParticipantJoined: onParticipantJoined,
             onParticipantLeft: onParticipantLeft,
@@ -235,6 +237,14 @@ class PieSocket {
 
     final channel = rooms[roomId]!;
     final conn = connection;
+
+    // Stop any WebRTC media now, regardless of which teardown path runs below
+    // (the primary-promotion branch doesn't call channel.disconnect()).
+    final rtc = channel.pieRTC;
+    if (rtc != null) {
+      channel.pieRTC = null;
+      rtc.dispose();
+    }
 
     if (conn != null && channel.hub != null) {
       if (roomId == conn.primaryChannelId) {

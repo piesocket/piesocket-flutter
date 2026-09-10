@@ -51,6 +51,38 @@ void main() {
       expect(frame['event'], 'rtc::watcher');
     });
 
+    test('cameraFacing seeds isFrontCamera (user -> front, environment -> rear)',
+        () {
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {});
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), conn);
+      channel.uuid = 'me';
+
+      final front = PieRTC(channel,
+          PieRTCOptions(video: false, audio: false), Logger(false));
+      expect(front.isFrontCamera, isTrue);
+
+      final rear = PieRTC(
+          channel,
+          PieRTCOptions(
+              video: false, audio: false, cameraFacing: 'environment'),
+          Logger(false));
+      expect(rear.isFrontCamera, isFalse);
+    });
+
+    test('switchCamera with no local video track is a no-op', () async {
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {});
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), conn);
+      channel.uuid = 'me';
+      final pieRTC = PieRTC(
+          channel, PieRTCOptions(video: false, audio: false), Logger(false));
+
+      expect(await pieRTC.switchCamera(), isTrue); // unchanged
+    });
+
     test(
         'removeParticipant fires onParticipantLeft and clears the participant map',
         () {
@@ -118,6 +150,42 @@ void main() {
       }));
 
       expect(sent, isEmpty);
+    });
+
+    test('rtc::renegotiate for us is a no-op when the peer is unknown', () {
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {});
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), conn);
+      channel.uuid = 'me';
+      channel.pieRTC = PieRTC(
+          channel, PieRTCOptions(video: false, audio: false), Logger(false));
+
+      expect(
+        () => channel.onMessage(json.encode({
+          'event': 'rtc::renegotiate',
+          'data': {'from': 'peer-1', 'to': 'me'}
+        })),
+        returnsNormally,
+      );
+    });
+
+    test('rtc::renegotiate addressed to someone else is ignored', () {
+      final conn =
+          Connection.forTesting('room-1', v4Options(), Logger(false), (_) {});
+      final channel =
+          Channel.multiplexed('room-1', v4Options(), Logger(false), conn);
+      channel.uuid = 'me';
+      channel.pieRTC = PieRTC(
+          channel, PieRTCOptions(video: false, audio: false), Logger(false));
+
+      expect(
+        () => channel.onMessage(json.encode({
+          'event': 'rtc::renegotiate',
+          'data': {'from': 'peer-1', 'to': 'someone-else'}
+        })),
+        returnsNormally,
+      );
     });
 
     test('rtc::stopped_screen from a peer calls onScreenSharingStopped', () {

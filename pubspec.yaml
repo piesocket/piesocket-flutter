@@ -1,11 +1,11 @@
 name: piesocket_channels
 description: PieSocket Realtime SDK for Flutter by Pie.host
-version: 7.0.0
+version: 7.1.0
 homepage: https://www.piehost.com/piesocket
 
 environment:
-  sdk: '>=2.18.4 <4.0.0'
-  flutter: ">=1.17.0"
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: ">=3.10.0"
 
 dependencies:
   flutter:
@@ -14,6 +14,8 @@ dependencies:
   uuid: ^3.0.7
   web_socket_channel: ^2.2.0
   flutter_webrtc: ^1.6.1
+  # PieCall — native incoming-call UI (CallKit / full-screen intent) + PushKit VoIP.
+  flutter_callkit_incoming: ^3.1.5
 
 dev_dependencies:
   flutter_test:

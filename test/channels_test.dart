@@ -604,6 +604,17 @@ void main() {
       expect(ps.connection!.channels.containsKey('room-2'), isFalse);
     });
 
+    test('leave() disposes the room\'s PieRTC (stops camera/mic)', () {
+      final ps = newV4Client();
+      ps.join('room-1');
+      final call = ps.join('call-room', pieRTC: true);
+      expect(call.pieRTC, isNotNull);
+
+      ps.leave('call-room');
+
+      expect(call.pieRTC, isNull);
+    });
+
     test(
         'a channel handle retained after leave() throws instead of silently forwarding',
         () {

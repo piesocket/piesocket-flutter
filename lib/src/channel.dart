@@ -211,6 +211,14 @@ class Channel {
   void disconnect() {
     _shouldReconnect = false;
 
+    // Tear down WebRTC before dropping the channel, so the camera/mic stop and
+    // peer connections close instead of streaming on headless.
+    final rtc = pieRTC;
+    if (rtc != null) {
+      pieRTC = null;
+      rtc.dispose();
+    }
+
     if (hub != null) {
       // A multiplexed secondary channel has no socket of its own — the
       // primary/promotion dance lives in PieSocket.leave(), which only calls
@@ -446,6 +454,7 @@ class Channel {
         } else {
           _members = (data["members"] as List?) ?? [];
         }
+        pieRTC?.onMemberJoined();
       } else if (event.getEvent() == memberLeftEvent) {
         var data = json.decode(event.getData());
         if (deltaPresence) {
@@ -475,19 +484,21 @@ class Channel {
     final to = data['to'];
 
     if (eventName == 'rtc::broadcaster' && from != uuid) {
-      pieRTC!.requestOfferFromPeer();
+      pieRTC!.onPeerSignal(data);
     } else if (eventName == 'rtc::stopped_screen' && from != uuid) {
       pieRTC!.onRemoteScreenStopped(from as String, data['streamId'] as String);
     } else if (eventName == 'rtc::watcher' && from != uuid) {
-      pieRTC!.shareVideo(data);
+      pieRTC!.onPeerSignal(data);
     } else if (eventName == 'rtc::request' && from != uuid) {
-      pieRTC!.shareVideo(data);
+      pieRTC!.onPeerSignal(data);
     } else if (eventName == 'rtc::candidate' && to == uuid) {
       pieRTC!.addIceCandidate(data);
     } else if (eventName == 'rtc::offer' && to == uuid) {
       pieRTC!.createAnswer(data);
     } else if (eventName == 'rtc::answer' && to == uuid) {
       pieRTC!.handleAnswer(data);
+    } else if (eventName == 'rtc::renegotiate' && to == uuid) {
+      pieRTC!.renegotiate(from as String);
     }
   }
 
