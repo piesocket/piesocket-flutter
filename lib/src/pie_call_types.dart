@@ -119,6 +119,7 @@ class PieCallConfig {
     this.ringtonePath = 'system_ringtone_default',
     this.ringDuration = const Duration(seconds: 45),
     this.iceServers,
+    this.requestNotificationPermission = true,
   });
 
   /// Shown on the CallKit / incoming-call UI.
@@ -134,4 +135,19 @@ class PieCallConfig {
 
   /// Overrides PieRTC's default STUN list when set.
   final List<Map<String, dynamic>>? iceServers;
+
+  /// Whether [PieCall]'s constructor asks `flutter_callkit_incoming` to
+  /// prompt for notification permission (its own rationale alert first, then
+  /// the OS dialog — see `_requestPermissions()`).
+  ///
+  /// Default `true` for drop-in behaviour. Set `false` when the host app
+  /// already requests notification permission itself (e.g. via
+  /// `firebase_messaging`) — that request determines the OS-level
+  /// authorization status either way, so a second ask here is redundant, and
+  /// if it happens to run before the host app's own request resolves,
+  /// `flutter_callkit_incoming` shows its own rationale alert on top of (or
+  /// ahead of) the host app's, which reads as a duplicate prompt to the
+  /// user. `requestFullIntentPermission()` (Android's full-screen incoming
+  /// call permission — a separate, unrelated permission) still always runs.
+  final bool requestNotificationPermission;
 }

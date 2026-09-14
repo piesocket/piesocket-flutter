@@ -1,3 +1,13 @@
+## 7.2.0
+**`PieCallConfig.requestNotificationPermission`** (default `true`) — set to
+`false` to skip `PieCall`'s own notification-permission ask entirely. It
+still exists for apps with no other notification setup, but a host app that
+already requests notification permission itself (e.g. via
+`firebase_messaging`) doesn't need a second one: `flutter_callkit_incoming`'s
+own rationale alert can otherwise show ahead of, or on top of, the host app's
+prompt, reading as a duplicate. `requestFullIntentPermission()` (Android's
+separate full-screen-intent permission) is unaffected and always runs.
+
 ## 7.1.0
 **PieCall** — one-object 1:1 calling with a real incoming-call experience.
 `PieCall` wires PieSocket call signalling to the native call UI

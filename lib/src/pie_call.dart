@@ -435,13 +435,15 @@ class PieCall {
 
   Future<void> _requestPermissions() async {
     try {
-      await FlutterCallkitIncoming.requestNotificationPermission({
-        'title': 'Notifications',
-        'rationaleMessagePermission':
-            'Allow notifications so you can see incoming calls.',
-        'postNotificationMessageRequired':
-            'Turn on notifications in Settings to receive calls.',
-      });
+      if (config.requestNotificationPermission) {
+        await FlutterCallkitIncoming.requestNotificationPermission({
+          'title': 'Notifications',
+          'rationaleMessagePermission':
+              'Allow notifications so you can see incoming calls.',
+          'postNotificationMessageRequired':
+              'Turn on notifications in Settings to receive calls.',
+        });
+      }
       if (await FlutterCallkitIncoming.canUseFullScreenIntent() == false) {
         await FlutterCallkitIncoming.requestFullIntentPermission();
       }

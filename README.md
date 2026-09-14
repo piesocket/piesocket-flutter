@@ -157,6 +157,13 @@ single object. It shows the native incoming-call UI, rings, wakes the screen,
 answers from the lock screen, and — with a push — does all of that when the app
 is force-quit.
 
+On construction it also asks for notification permission itself (a rationale
+alert, then the OS dialog) so incoming calls can show a native notification.
+If your app already asks for notification permission elsewhere (e.g. via
+`firebase_messaging`), pass `PieCallConfig(requestNotificationPermission:
+false)` to skip PieCall's own ask — otherwise the two can show as a
+back-to-back duplicate prompt.
+
 ```dart
 final call = PieCall(
   socket: () => piesocket,            // your PieSocket instance (nullable ok)
