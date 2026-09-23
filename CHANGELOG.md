@@ -1,3 +1,14 @@
+## 7.2.1
+**Fix:** answering (or declining) a call straight from the native lock-screen
+UI while the app was force-quit could silently do nothing — CallKit's own UI
+would flip to "connected", but the server-side accept never fired (so the
+caller kept ringing) and the app never navigated to the call screen. On that
+cold-start path the plugin can replay only the terminal `Accept`/`Decline`
+event to the newly-created `PieCall`, with no preceding `Incoming` event to
+build `_invite` from first, so `accept()`/`decline()` no-op'd on a null
+invite. Both events now rebuild `_invite` from their own `CallKitParams`
+first, the same way `Incoming` always has.
+
 ## 7.2.0
 **`PieCallConfig.requestNotificationPermission`** (default `true`) — set to
 `false` to skip `PieCall`'s own notification-permission ask entirely. It

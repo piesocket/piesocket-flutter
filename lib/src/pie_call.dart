@@ -253,21 +253,24 @@ class PieCall {
   Future<void> _onCallKitEvent(CallEvent? event) async {
     switch (event) {
       case CallEventActionCallIncoming(:final callKitParams):
-        // Shown by a push while we were dead — rebuild the invite from `extra`.
-        if (_invite == null) {
-          final extra = callKitParams.extra ?? const <String, dynamic>{};
-          if (PieCallPush.isCallPush(extra) || extra['call_id'] != null) {
-            _onInvite(PieCallInvite.fromMap({
-              ...extra,
-              'call_uuid': extra['call_uuid'] ?? callKitParams.id,
-            }));
-          }
-        }
+        _ensureInviteFrom(callKitParams);
         break;
-      case CallEventActionCallAccept():
+      case CallEventActionCallAccept(:final callKitParams):
+        // The app can cold-start straight into this event: killed, VoIP push
+        // shows the native UI via `PieCallPush.handleData` with no `PieCall`
+        // instance alive, user taps Accept on the lock screen, iOS launches
+        // us and the plugin replays only this terminal action — no preceding
+        // `CallEventActionCallIncoming` to rebuild `_invite` from. Without
+        // this, `accept()` no-ops on a null `_invite`: CallKit's own UI still
+        // flips to "connected" locally, but `onAccept` (the server-side
+        // accept) never fires, so the caller keeps ringing and this device
+        // never navigates to the call screen.
+        _ensureInviteFrom(callKitParams);
         await accept();
         break;
-      case CallEventActionCallDecline():
+      case CallEventActionCallDecline(:final callKitParams):
+        // Same cold-start race as Accept above, for a lock-screen Decline.
+        _ensureInviteFrom(callKitParams);
         await decline();
         break;
       case CallEventActionCallEnded():
@@ -298,6 +301,22 @@ class PieCall {
   }
 
   // ── Internals ────────────────────────────────────────────────────────────
+
+  /// Rebuilds `_invite` from a CallKit event's `extra` payload when we don't
+  /// have one yet — the app was cold-started straight into this event (no
+  /// prior `CallEventActionCallIncoming` was delivered to build it from
+  /// first). Called ahead of [accept] / [decline] so those aren't acting on
+  /// a call this instance has never heard of. A no-op once `_invite` is set.
+  void _ensureInviteFrom(CallKitParams callKitParams) {
+    if (_invite != null) return;
+    final extra = callKitParams.extra ?? const <String, dynamic>{};
+    if (PieCallPush.isCallPush(extra) || extra['call_id'] != null) {
+      _onInvite(PieCallInvite.fromMap({
+        ...extra,
+        'call_uuid': extra['call_uuid'] ?? callKitParams.id,
+      }));
+    }
+  }
 
   void _onInvite(PieCallInvite invite) {
     if (_recentlyEnded.contains(invite.callId)) return; // late push for a done call
